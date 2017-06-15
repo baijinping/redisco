@@ -8,14 +8,11 @@ from functools import partial
 
 
 class Container(object):
-    """Create a container object saved in Redis.
-
-    Arguments:
-        key -- the Redis key this container is stored at
-        db  -- the Redis client object. Default: None
-
-    When ``db`` is not set, the gets the default connection from
-    ``redisco.connection`` module.
+    """
+    Base class for all containers. This class should not
+    be used and does not provide anything except the ``db``
+    member.
+    :members:
     """
 
     def __init__(self, key, db=None, pipeline=None):
@@ -24,7 +21,18 @@ class Container(object):
         self.pipeline = pipeline
 
     def clear(self):
-        """Remove container from Redis database."""
+        """
+        Remove the container from the redis storage
+
+        >>> s = Set('test')
+        >>> s.add('1')
+        1
+        >>> s.clear()
+        >>> s.members
+        set([])
+
+
+        """
         del self.db[self.key]
 
     def __getattribute__(self, att):
@@ -36,11 +44,11 @@ class Container(object):
 
     @property
     def db(self):
-        if self.pipeline:
+        if self.pipeline is not None:
             return self.pipeline
-        if self._db:
+        if self._db is not None:
             return self._db
-        if hasattr(self, 'db_cache') and self.db_cache:
+        if hasattr(self, 'db_cache') and self.db_cache is not None:
             return self.db_cache
         else:
             from redisco import connection
@@ -84,96 +92,235 @@ class Set(Container):
         return self.sismember(value)
 
     def isdisjoint(self, other):
-        """Return True if the set has no elements in common with other."""
+        """
+        Return True if the set has no elements in common with other.
+
+        :param other: another ``Set``
+        :rtype: boolean
+
+        >>> s1 = Set("key1")
+        >>> s2 = Set("key2")
+        >>> s1.add(['a', 'b', 'c'])
+        3
+        >>> s2.add(['c', 'd', 'e'])
+        3
+        >>> s1.isdisjoint(s2)
+        False
+        >>> s1.clear()
+        >>> s2.clear()
+        """
         return not bool(self.db.sinter([self.key, other.key]))
 
-    def issubset(self, other):
-        """Test whether every element in the set is in other."""
-        return self <= other
+    def issubset(self, other_set):
+        """
+        Test whether every element in the set is in other.
 
-    def __le__(self, other):
-        return self.db.sinter([self.key, other.key]) == self.all()
+        :param other_set: another ``Set`` to compare to.
 
-    def __lt__(self, other):
+        >>> s1 = Set("key1")
+        >>> s2 = Set("key2")
+        >>> s1.add(['a', 'b', 'c'])
+        3
+        >>> s2.add('b')
+        1
+        >>> s2.issubset(s1)
+        True
+        >>> s1.clear()
+        >>> s2.clear()
+
+        """
+        return self <= other_set
+
+    def __le__(self, other_set):
+        return self.db.sinter([self.key, other_set.key]) == self.all()
+
+    def __lt__(self, other_set):
         """Test whether the set is a true subset of other."""
-        return self <= other and self != other
+        return self <= other_set and self != other_set
 
-    def __eq__(self, other):
-        if other.key == self.key:
+    def __eq__(self, other_set):
+        """
+        Test equality of:
+        1. keys
+        2. members
+        """
+        if other_set.key == self.key:
             return True
-        slen, olen = len(self), len(other)
+        slen, olen = len(self), len(other_set)
         if olen == slen:
-            return self.members == other.members
+            return self.members == other_set.members
         else:
             return False
 
-    def issuperset(self, other):
-        """Test whether every element in other is in the set."""
-        return self >= other
 
-    def __ge__(self, other):
+    def issuperset(self, other_set):
+        """
+        Test whether every element in other is in the set.
+
+        :param other_set: another ``Set`` to compare to.
+
+        >>> s1 = Set("key1")
+        >>> s2 = Set("key2")
+        >>> s1.add(['a', 'b', 'c'])
+        3
+        >>> s2.add('b')
+        1
+        >>> s1.issuperset(s2)
+        True
+        >>> s1.clear()
+        >>> s2.clear()
+
+        """
+        return self >= other_set
+
+    def __ge__(self, other_set):
         """Test whether every element in other is in the set."""
-        return self.db.sinter([self.key, other.key]) == other.all()
-    
-    def __gt__(self, other):
+        return self.db.sinter([self.key, other_set.key]) == other_set.all()
+
+    def __gt__(self, other_set):
         """Test whether the set is a true superset of other."""
-        return self >= other and self != other
-
+        return self >= other_set and self != other_set
 
     # SET Operations
     def union(self, key, *others):
-        """Return a new set with elements from the set and all others."""
+        """
+        Return a new ``Set`` representing the union of *n* sets.
+
+        :param key: String representing the key where to store the result (the union)
+        :param other_sets: list of other ``Set``.
+        :rtype: ``Set``
+
+        >>> s1 = Set('key1')
+        >>> s2 = Set('key2')
+        >>> s1.add(['a', 'b', 'c'])
+        3
+        >>> s2.add(['d', 'e'])
+        2
+        >>> s3 = s1.union('key3', s2)
+        >>> s3.key
+        u'key3'
+        >>> s3.members
+        set(['a', 'c', 'b', 'e', 'd'])
+        >>> s1.clear()
+        >>> s2.clear()
+        >>> s3.clear()
+
+        """
         if not isinstance(key, str):
             raise ValueError("String expected.")
         self.db.sunionstore(key, [self.key] + [o.key for o in others])
-        return Set(key)
+        return Set(key, db=self.db)
 
     def intersection(self, key, *others):
-        """Return a new set with elements common to the set and all others."""
+    	"""
+        Return a new ``Set`` representing the intersection of *n* sets.
+
+        :param key: String representing the key where to store the result (the union)
+        :param other_sets: list of other ``Set``.
+        :rtype: Set
+
+        >>> s1 = Set('key1')
+        >>> s2 = Set('key2')
+        >>> s1.add(['a', 'b', 'c'])
+        3
+        >>> s2.add(['c', 'e'])
+        2
+        >>> s3 = s1.intersection('key3', s2)
+        >>> s3.key
+        u'key3'
+        >>> s3.members
+        set(['c'])
+        >>> s1.clear()
+        >>> s2.clear()
+        >>> s3.clear()
+        """
+
         if not isinstance(key, str):
             raise ValueError("String expected.")
         self.db.sinterstore(key, [self.key] + [o.key for o in others])
-        return Set(key)
+        return Set(key, db=self.db)
 
     def difference(self, key, *others):
-        """Return a new set with elements in the set that are not in the others."""
+        """
+        Return a new ``Set`` representing the difference of *n* sets.
+
+        :param key: String representing the key where to store the result (the union)
+        :param other_sets: list of other ``Set``.
+        :rtype: Set
+
+        >>> s1 = Set('key1')
+        >>> s2 = Set('key2')
+        >>> s1.add(['a', 'b', 'c'])
+        3
+        >>> s2.add(['c', 'e'])
+        2
+        >>> s3 = s1.difference('key3', s2)
+        >>> s3.key
+        u'key3'
+        >>> s3.members
+        set(['a', 'b'])
+        >>> s1.clear()
+        >>> s2.clear()
+        >>> s3.clear()
+        """
+
         if not isinstance(key, str):
             raise ValueError("String expected.")
         self.db.sdiffstore(key, [self.key] + [o.key for o in others])
-        return Set(key)
+        return Set(key, db=self.db)
 
-    def update(self, *others):
-        """Update the set, adding elements from all others."""
-        self.db.sunionstore(self.key, [self.key] + [o.key for o in others])
+    def update(self, *other_sets):
+        """Update the set, adding elements from all other_sets.
 
-    def __ior__(self, other):
-        self.db.sunionstore(self.key, [self.key, other.key])
+        :param other_sets: list of ``Set``
+        :rtype: None
+        """
+        self.db.sunionstore(self.key, [self.key] + [o.key for o in other_sets])
+
+    def __ior__(self, other_set):
+        self.db.sunionstore(self.key, [self.key, other_set.key])
         return self
 
-    def intersection_update(self, *others):
-        """Update the set, keeping only elements found in it and all others."""
-        self.db.sinterstore(self.key, [o.key for o in [self.key] + others])
+    def intersection_update(self, *other_sets):
+        """
+        Update the set, keeping only elements found in it and all other_sets.
 
-    def __iand__(self, other):
-        self.db.sinterstore(self.key, [self.key, other.key])
+        :param other_sets: list of ``Set``
+        :rtype: None
+        """
+        self.db.sinterstore(self.key, [o.key for o in [self.key] + other_sets])
+
+    def __iand__(self, other_set):
+        self.db.sinterstore(self.key, [self.key, other_set.key])
         return self
 
-    def difference_update(self, *others):
-        """Update the set, removing elements found in others."""
-        self.db.sdiffstore(self.key, [o.key for o in [self.key] + others])
-        
-    def __isub__(self, other):
-        self.db.sdiffstore(self.key, [self.key, other.key])
+    def difference_update(self, *other_sets):
+        """
+        Update the set, removing elements found in others.
+
+        :param other_sets: list of ``Set``
+        :rtype: None
+        """
+        self.db.sdiffstore(self.key, [o.key for o in [self.key] + other_sets])
+
+    def __isub__(self, other_set):
+        self.db.sdiffstore(self.key, [self.key, other_set.key])
         return self
-    
+
     def all(self):
         return self.db.smembers(self.key)
+
     members = property(all)
+    """
+    return the real content of the Set.
+    """
 
     def copy(self, key):
-        """Copy the set to another key and return the new Set.
+        """
+        Copy the set to another key and return the new Set.
 
-        WARNING: If the key exists, it overwrites it.
+        .. WARNING::
+            If the new key already contains a value, it will be overwritten.
         """
         copy = Set(key=key, db=self.db)
         copy.clear()
@@ -183,25 +330,32 @@ class Set(Container):
     def __iter__(self):
         return self.members.__iter__()
 
-    
     def sinter(self, *other_sets):
-        """Performs an intersection between Sets.
+        """
+        Performs an intersection between Sets and return the *RAW* result.
 
-        Returns a set of common members. Uses Redis.sinter.
+        .. NOTE::
+            This function return an actual ``set`` object (from python) and not a ``Set``. See func:``intersection``.
         """
         return self.db.sinter([self.key] + [s.key for s in other_sets])
 
     def sunion(self, *other_sets):
-        """Union between Sets.
+        """
+        Performs a union between two sets and returns the *RAW* result.
 
-        Returns a set of common members. Uses Redis.sunion.
+        .. NOTE::
+            This function return an actual ``set`` object (from python) and not a ``Set``.
         """
         return self.db.sunion([self.key] + [s.key for s in other_sets])
 
     def sdiff(self, *other_sets):
-        """Union between Sets.
+        """
+        Performs a difference between two sets and returns the *RAW* result.
 
-        Returns a set of common members. Uses Redis.sdiff.
+        .. NOTE::
+            This function return an actual ``set`` object (from python) and not a ``Set``.
+            See function difference.
+
         """
         return self.db.sdiff([self.key] + [s.key for s in other_sets])
 
@@ -211,11 +365,17 @@ class Set(Container):
 
 
 class List(Container):
+    """
+    This class represent a list object as seen in redis.
+    """
 
     def all(self):
-        """Returns all items in the list."""
+        """
+        Returns all items in the list.
+        """
         return self.lrange(0, -1)
     members = property(all)
+    """Return all items in the list."""
 
     def __len__(self):
         return self.llen()
@@ -238,11 +398,19 @@ class List(Container):
     push = append
 
     def extend(self, iterable):
-        """Extend list by appending elements from the iterable."""
+        """
+        Extend list by appending elements from the iterable.
+
+        :param iterable: an iterable objects.
+        """
         map(lambda i: self.rpush(i), iterable)
 
     def count(self, value):
-        """Return number of occurrences of value."""
+        """
+        Return number of occurrences of value.
+
+        :param value: a value tha *may* be contained in the list
+        """
         return self.members.count(value)
 
     def index(self, value):
@@ -273,7 +441,11 @@ class List(Container):
         self.lrem(value, num)
 
     def reverse(self):
-        """Reverse in place."""
+        """
+        Reverse the list in place.
+
+        :return: None
+        """
         r = self[:]
         r.reverse()
         self.clear()
@@ -282,7 +454,8 @@ class List(Container):
     def copy(self, key):
         """Copy the list to a new list.
 
-        WARNING: If key exists, it clears it before copying.
+        ..WARNING:
+            If destination key already contains a value, it clears it before copying.
         """
         copy = List(key, self.db)
         copy.clear()
@@ -389,10 +562,15 @@ class TypedList(object):
         return repr(self.typecast_iter(self.list))
 
 class SortedSet(Container):
+    """
+    This class represents a SortedSet in redis.
+    Use it if you want to arrange your set in any order.
+
+    """
 
     def add(self, member, score):
         """Adds member to the set."""
-        return self.zadd(member, score)
+        self.zadd(member, score)
 
     def remove(self, member):
         """Removes member from set."""
@@ -417,7 +595,9 @@ class SortedSet(Container):
             return self.zrange(index, index)[0]
 
     def score(self, member):
-        """Returns the score of member."""
+        """
+        Returns the score of member.
+        """
         return self.zscore(member)
 
     def __len__(self):
@@ -428,12 +608,16 @@ class SortedSet(Container):
 
     @property
     def members(self):
-        """Returns the members of the set."""
+        """
+        Returns the members of the set.
+        """
         return self.zrange(0, -1)
 
     @property
     def revmembers(self):
-        """Returns the members of the set in reverse."""
+        """
+        Returns the members of the set in reverse.
+        """
         return self.zrevrange(0, -1)
 
     def __iter__(self):
@@ -448,28 +632,53 @@ class SortedSet(Container):
 
     @property
     def _min_score(self):
-        return self.zscore(self.__getitem__(0))
+        """
+        Returns the minimum score in the SortedSet.
+        """
+        try:
+            return self.zscore(self.__getitem__(0))
+        except IndexError:
+            return None
 
     @property
     def _max_score(self):
-        return self.zscore(self.__getitem__(-1))
+        """
+        Returns the maximum score in the SortedSet.
+        """
+        try:
+            # fix bug: bai jin ping, 2016/6/1
+            # self.zscore(self.__getitem__(-1))
+            return self.zscore(self.__getitem__(-1))
+        except IndexError:
+            return None
 
     def lt(self, v, limit=None, offset=None):
-        """Returns the list of the members of the set that have scores
+        """
+        Returns the list of the members of the set that have scores
         less than v.
+
+        :param v: the score to compare to.
+        :param limit: limit the result to *n* elements
+        :param offset: Skip the first *n* elements
         """
         if limit is not None and offset is None:
             offset = 0
-        return self.zrangebyscore(self._min_score, "(%f" % v,
+        return self.zrangebyscore("-inf", "(%f" % v,
                 start=offset, num=limit)
 
     def le(self, v, limit=None, offset=None):
-        """Returns the list of the members of the set that have scores
+        """
+        Returns the list of the members of the set that have scores
         less than or equal to v.
+
+        :param v: the score to compare to.
+        :param limit: limit the result to *n* elements
+        :param offset: Skip the first *n* elements
+
         """
         if limit is not None and offset is None:
             offset = 0
-        return self.zrangebyscore(self._min_score, v,
+        return self.zrangebyscore("-inf", v,
                 start=offset, num=limit)
 
     def gt(self, v, limit=None, offset=None):
@@ -478,21 +687,46 @@ class SortedSet(Container):
         """
         if limit is not None and offset is None:
             offset = 0
-        return self.zrangebyscore("(%f" % v, self._max_score,
+        return self.zrangebyscore("(%f" % v, "+inf",
                 start=offset, num=limit)
 
     def ge(self, v, limit=None, offset=None):
         """Returns the list of the members of the set that have scores
         greater than or equal to v.
+
+        :param v: the score to compare to.
+        :param limit: limit the result to *n* elements
+        :param offset: Skip the first *n* elements
+
         """
         if limit is not None and offset is None:
             offset = 0
-        return self.zrangebyscore("(%f" % v, self._max_score,
+        return self.zrangebyscore("(%f" % v, "+inf",
                 start=offset, num=limit)
 
     def between(self, min, max, limit=None, offset=None):
-        """Returns the list of the members of the set that have scores
+        """
+        Returns the list of the members of the set that have scores
         between min and max.
+
+        .. Note::
+            The min and max are inclusive when comparing the values.
+
+        :param min: the minimum score to compare to.
+        :param max: the maximum score to compare to.
+        :param limit: limit the result to *n* elements
+        :param offset: Skip the first *n* elements
+
+        >>> s = SortedSet("foo")
+        >>> s.add('a', 10)
+        1
+        >>> s.add('b', 20)
+        1
+        >>> s.add('c', 30)
+        1
+        >>> s.between(20, 30)
+        ['b', 'c']
+        >>> s.clear()
         """
         if limit is not None and offset is None:
             offset = 0
@@ -500,8 +734,8 @@ class SortedSet(Container):
                 start=offset, num=limit)
 
     def eq(self, value):
-        """Returns the list of the members of the set that have scores
-        equal to value.
+        """
+        Returns the elements that have ``value`` for score.
         """
         return self.zrangebyscore(value, value)
 
@@ -546,7 +780,8 @@ class Hash(Container, collections.MutableMapping):
         return self.hexists(att)
 
     def __repr__(self):
-        return "<%s '%s' %s>" % (self.__class__.__name__, self.key, self.hgetall())
+        return "<%s '%s' %s>" % (self.__class__.__name__,
+                                 self.key, self.hgetall())
 
     def keys(self):
         return self.hkeys()

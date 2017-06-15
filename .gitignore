@@ -5,3 +5,4 @@ redisco.egg-info
 .DS_Store
 dump.rdb
 *.swp
+.idea

@@ -1,13 +1,11 @@
-# -*- coding: utf-8 -*-
+# -*- coding: UTF-8 -*-
 """
 Defines the fields that can be added to redisco models.
 """
 import time
 from datetime import datetime, date
-from dateutil.tz import tzutc, tzlocal
-from calendar import timegm
 from redisco.containers import List
-from exceptions import FieldValidationError, MissingID
+from exceptions import FieldValidationError
 
 __all__ = ['Attribute', 'CharField', 'ListField', 'DateTimeField',
         'DateField', 'ReferenceField', 'IntegerField',
@@ -54,6 +52,11 @@ class Attribute(object):
                 val = instance.db.hget(instance.key(), self.name)
                 if val is not None:
                     val = self.typecast_for_read(val)
+
+                # redisco的Attribute当值为空时，添加返回默认值
+                # by bjp, 2015/7/27
+                else:
+                    val = self.default
                 self.__set__(instance, val)
                 return val
             else:
@@ -74,7 +77,8 @@ class Attribute(object):
         try:
             return unicode(value)
         except UnicodeError:
-            return value.decode('utf-8')
+            # return value.decode('utf-8', 'ignore')  # 忽略解码失败的字符
+            return value.decode('utf-8', 'replace')  # ？代替解码失败的字符
 
     def value_type(self):
         return unicode
@@ -107,15 +111,9 @@ class Attribute(object):
 
     def validate_uniqueness(self, instance, val):
         encoded = self.typecast_for_storage(val)
-        matches = instance.__class__.objects.filter(**{self.name: encoded})
-        if len(matches) > 0:
-            try:
-                instance_id = instance.id
-                no_id = False
-            except MissingID:
-                no_id = True
-            if (len(matches) != 1) or no_id or (matches.first().id != instance.id):
-                return (self.name, 'not unique',)
+        same = len(instance.__class__.objects.filter(**{self.name: encoded}))
+        if same > (0 if instance.is_new() else 1):
+            return (self.name, 'not unique',)
 
 
 class CharField(Attribute):
@@ -130,12 +128,37 @@ class CharField(Attribute):
             super(CharField, self).validate(instance)
         except FieldValidationError as err:
             errors.extend(err.errors)
-
+        
         val = getattr(instance, self.name)
 
-        if val and len(val) > self.max_length:
-            errors.append((self.name, 'exceeds max length'))
+        # utf8编码一个中文占3个字节
+        if val:
+            val_len = self.max_length + 1
+            try:
+                if type(val) is not unicode:
+                    val = val.decode('utf8')
 
+                def is_chinese(uchar):
+                    """判断一个unicode是否是汉字"""
+                    if u'\u4e00' <= uchar <= u'\u9fa5':
+                            return True
+                    else:
+                            return False
+
+                # 计算长度
+                val_len = 0
+                for ch in val:
+                    if is_chinese(ch):
+                        val_len += 2
+                    else:
+                        val_len += 1
+
+            except UnicodeError as err:
+                errors.append((self.name, err.__str__()))
+
+            if val_len > self.max_length:
+                errors.append((self.name, '%d exceeds max length' % val_len))
+        
         if errors:
             raise FieldValidationError(errors)
 
@@ -197,10 +220,7 @@ class DateTimeField(Attribute):
 
     def typecast_for_read(self, value):
         try:
-            # We load as if the timestampe was naive
-            dt = datetime.fromtimestamp(float(value), tzutc())
-            # And gently override (ie: not convert) to the TZ to UTC
-            return dt
+            return datetime.fromtimestamp(float(value))
         except TypeError, ValueError:
             return None
 
@@ -210,10 +230,7 @@ class DateTimeField(Attribute):
                     (self.name, type(value)))
         if value is None:
             return None
-        # Are we timezone aware ? If no, make it TimeZone Local
-        if value.tzinfo is None:
-           value = value.replace(tzinfo=tzlocal())
-        return "%d.%06d" % (float(timegm(value.utctimetuple())),  value.microsecond)
+        return "%f" % (time.mktime(value.timetuple()) + value.microsecond / 1000000.0)
 
     def value_type(self):
         return datetime
@@ -230,10 +247,7 @@ class DateField(Attribute):
 
     def typecast_for_read(self, value):
         try:
-            # We load as if it is UTC time
-            dt = date.fromtimestamp(float(value))
-            # And assign (ie: not convert) the UTC TimeZone
-            return dt
+            return date.fromtimestamp(float(value))
         except TypeError, ValueError:
             return None
 
@@ -243,7 +257,7 @@ class DateField(Attribute):
                     (self.name, type(value)))
         if value is None:
             return None
-        return "%d" % float(timegm(value.timetuple()))
+        return "%f" % time.mktime(value.timetuple())
 
     def value_type(self):
         return date
@@ -287,7 +301,7 @@ class ListField(object):
                 val = self.default
             else:
                 key = instance.key()[self.name]
-                val = List(key).members
+                val = List(key, instance.db).members
             if val is not None:
                 klass = self.value_type()
                 if self._redisco_model:
@@ -354,6 +368,10 @@ class ReferenceField(object):
         self.default = default
 
     def __set__(self, instance, value):
+        """
+        Will set the referenced object unless None is provided
+        which will simply remove the reference
+        """
         if not isinstance(value, self.value_type()) and \
                 value is not None:
             raise TypeError
@@ -384,7 +402,7 @@ class ReferenceField(object):
 
     @property
     def related_name(self):
-        return self._related_name
+        return self._related_name 
 
     def validate(self, instance):
         val = getattr(instance, self.name)
